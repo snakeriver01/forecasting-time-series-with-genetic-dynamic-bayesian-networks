@@ -1,0 +1,567 @@
+---
+title: How to forecast econometric and financial time-series with genetic Dynamic Bayesian Networks and Associative Rules
+subtitle: in this article, we will be forecasting **CPI** ( Consumer Price Index )  
+author: "LloydL"
+date: '`r format(Sys.Date(), "%Y %m %d")`'
+output:
+  html_document:
+    code_folding: show
+fontsize: 12pt
+fig_width: 18
+fig_height: 14
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.height = 9, fig.width = 7)
+options(width=1800)
+```
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r definition, echo = F, include=TRUE } 
+# this is the key function extending bnlearn to perform dynamic bayesian networks similar to
+# the layering feature found in bnstruct
+
+blackList = function( nn=names(xx)[ss] ){
+cm = t(  combn( nn, m=2 )  ) 				# nn has to be in order by lag number    transpose so combos are by row 
+blk.lst = matrix( ' ', ncol=2, nrow=10*length(nn) )
+colnames( blk.lst ) = c( 'from', 'to' )
+
+blk.lst [ 1:length(nn), 'from' ] = 'response'   	# response is at lag 0 so it cannot go to all other nodes 
+blk.lst [ 1:length(nn) , 'to' ] = nn
+blk.lst [ (length(nn)+1):( length(nn) + nrow( cm ) ), c( 'from', 'to' ) ] =  cm    # by rows now
+L = ( length(nn) + nrow( cm ) )         # row L is already is use   serves as new baseline
+for( ii in 1:4 ) {
+pp = paste( '_L', ii, sep = '' )
+lev1 = str_detect( cm[ , 1 ],  pp  )        
+lev2 = str_detect( cm[ , 2 ],  pp ) 
+mm = lev2 & lev1                   # these are matches of lev1 and lev2  both must be true  index is the same as cm
+M = sum( ifelse( mm==T, 1,  0 )  )
+if( M  > 0 ){
+	 blk.lst[ (L+1):( L + M ), c( 'to', 'from' ) ]  = cm[ mm, ]
+	 L = L + M 
+  } # end if
+}  # end for ii
+
+return( blk.lst[ 1:L,  ] )
+
+} # end of function 
+
+### this display the strength.plot of the dynamic bayesian network
+
+showStrength = function( xx=xx, response=response, response.name=response.name, df=df, sampleSize=sampleSize, db=db , font.size = 75, titleSuffix = ' chg % in CPI (consumer price index) y/y' ){
+dev.new()    # active graphics device for strength.plot fontsize work-around
+dev.new()
+dev.lst = dev.list()
+dev.set( which = dev.lst[[1]] )
+#   par(ask=T )
+fc = rep( 0, nrow( df ) )   # stores forecasts which is forecast[3]  because xx.test has 2 rows
+nn = colnames( xx )
+for( ii in 1:nrow(df) ){ 
+ss = unlist( df[ ii, 1:sampleSize ] )
+xxx = as.data.frame( cbind( response=response,  xx[ ,  ss ]  ) ) 
+names( xxx ) = c( 'response', nn[ss]  )   
+blk.lst = blackList( colnames(xx)[ ss ] ) 
+res  = hc( xxx, blacklist=blk.lst, restart = 4, perturb = 6, max.iter = 600, maxp = 3, optimized = T )
+strength = arc.strength( x=res, data=xxx )   
+res.fit = bn.fit( x=res, data=xxx, cluster = NULL, method = "mle" )
+rr  = residuals( res.fit )[[ 'response' ]]
+err = median( abs( rr ) ) 
+pp = parents( x=res.fit, node='response' )
+forecast = predBN( nn = nn[ ss ], bn.fit = res.fit, db = db )   # a vector
+fwd.error = abs( response.test[ 1:2 ] - forecast[ 1:2 ] )
+fc[ ii ] = forecast[ 3 ]
+bn.score = bnlearn::score( res , xxx, type = "bge" )
+wh = which( strength[ , 'to' ] == 'response' )
+arcStr = sum( strength[ wh, 'strength' ] );
+subText = paste(  'fwd errors ( ', round( fwd.error[1] , 3 ), ' , ', round( fwd.error[2] , 3 ), ' )  ; with mad error ' , round( err, 2 ), 
+' ; bayes.net.score ', round( bn.score, 1), '  ;  response total arc.strength ',  round(arcStr,1) ,  sep='' )
+mainText = paste( paste( 'Dynamic Bayesian Network for: ' , response.name ) , '\n', ' forecast ===> ',  round( forecast[3] , 3 ), '  ',  titleSuffix , sep='' );
+# all this to accommodate a bug in plot.strength (fontsize)
+dev.set( which=dev.lst[[2]] )
+g1 = strength.plot( x=res, strength = strength, layout = 'dot', shape = "circle" , main = mainText  , sub = subText  )
+dev.set( which = dev.lst[[ 1 ]] )
+x <- layoutGraph( x = g1 )
+nodeRenderInfo( x ) = list(  fontsize = font.size  ) 
+renderGraph( x ) 
+
+}  # end of for ii
+
+return( paste( 'median forecast: ', median ( fc ) ) )
+} # end of fun
+   
+  
+#this filters out weaker models by evaluating goodness of fit #(median absolute residuals over the ENTIRE SERIES )
+# and network connectivity ( total abs (correlations) )
+# take note concerning xx.test and xx.response, they are not 
+# implemented as out-of-sample yet
+# due to a presentation and programming problem .) 
+
+# parBN.Filter  is a parallel filter that converts the list results of corConn also parallel
+# into a data.frame.
+parBN.Filter = function( X = parBN, xx=xx, response=response, totalConn = 8,   acceptableError = 25000, sampleSize = sampleSize, db=cpiDb  ) {
+df.bn = rep( 0, ncol= 16 )   
+if( is.null( X )|| length( X$ss ) == 0 || X$ss == rep( 0, length( X$ss ) ) ) return( df.bn )
+xxx = xx[ , X$ss ]
+nn = colnames(xxx)
+blk.lst = blackList( nn ) 
+xxx = as.data.frame( cbind( response, xxx ) )
+colnames( xxx ) = c( 'response', nn )
+
+res  = hc( xxx , blacklist=blk.lst, restart = 4, perturb = 6, max.iter = 200, maxp = 3, optimized = T )   
+res.fit = bn.fit( x=res, data=xxx, cluster = NULL, method = "mle" )
+rr  = residuals( res.fit )[[ 'response' ]]
+err = median( abs( rr ) ) 
+
+forecast = predBN( nn = nn, bn.fit = res.fit, db = db )   # a vector
+fwd.error = abs( response.test[ 1:2 ] - forecast[ 1:2 ] ) 
+
+# compute local arc strength centered on the response
+strength = arc.strength( x=res , data=xxx )   
+wh = which( strength[ , 'to' ] == 'response' )
+arcStr = sum( strength[ wh, 'strength' ] );
+
+forecast = predBN( nn = nn , bn.fit = res.fit, db = db )   # a vector
+fwd.error = abs( response.test[ 1:2 ] - forecast[ 1:2 ] )
+
+bn.score = bnlearn::score( res , xxx, type = "bge" )
+
+# if(  X$totalRock >= totalConn && err <= acceptableError ){ 
+   		df.bn[  1:sampleSize ] = X$ss
+	  	X$fwd.error = fwd.error[1:2] 
+	    X$forecast = forecast[ 3 ]
+	    X$bnScore = bn.score
+	    X$arcStr = arcStr   # local arc strength
+	    X$parentCount = length( parents( x=res.fit, node='response' ) )
+		 L = length(X$ss)          
+       X = unlist( X )                       
+   		 df.bn[ (L+1):(L+8) ]  = X[(L+1):(L+8) ]
+#       } # endif 
+
+return( df.bn )   # filtered results
+}  # end of fun
+
+corConn = function( response, xx, sampleSize = 8, totalCor = 12,   x=CM  ){
+ss = sort( x  )                # sample( 1:ncol(xx), sampleSize )
+nn = colnames( xx )[ ss ]
+xxx = cbind( response = response, xx[ , ss ] ) 
+xxx = as.data.frame( xxx )
+names( xxx ) = c( 'response', nn )
+ddp = dedup( data = xxx, threshold = 0.95 , debug = F  )  # collinearity, it's murder !
+if( ncol( ddp ) < length( x ) ) return( list( ss = rep(0,length(ss)), totalRock = 0, response.cor = 0 ) )
+
+blk.lst = blackList( nn )
+rocker = abs( cor( xxx ) )
+# acquire the response corrs (most important for forecasting response )
+response.cor = ifelse( 0.33 <= rocker[ 'response' , ] & rocker[ 'response' , ]  <= 0.95, 1 , 0 )  
+if( sum( response.cor ) < 2 ) 	 return( list( ss = rep(0,length(ss)), totalRock = 0, response.cor = 0 )  ) 
+colnames( rocker ) = c( 'response', nn )    # restore the name space again
+rownames( rocker ) = c( 'response', nn )    # restore the name space again
+rocker[ as.matrix( rocker ) ] = 0
+ 
+ut = upper.tri( rock, diag = T )     
+rocker[ ut ] = 0     # from corresponds to rows; to corresponds to  columns
+rocker = as.vector( rocker   )
+rocker = rocker[ rocker != 0 & !is.na( rocker ) ]
+qq = quantile( rocker, 0.1 )
+rock =   ifelse( ( max( qq , 0.2 ) < rocker  & rocker  < 0.92 ) , 1 , 0  )   # count the number of probable arcs
+totalRock = sum( rock )	
+if(  totalCor <= totalRock ) { 
+      return( list( ss = ss, totalRock = totalRock, response.cor = sum( response.cor )  ) )
+  } 
+else return( list( ss = rep(0,length(ss)), totalRock = 0, response.cor = 0 ) )
+# end if
+
+} # end fun
+
+### this creates the forecasts, the first two are for partial validation and the third is the actual forecast
+predBN = function( nn = nn, bn.fit, db = cpiDb ){
+ss = strsplit(  nn, '_L' )
+nm = rep( '  ' , length(ss) )
+for( ii in 1:length( ss ) ) nm[ ii ] = as.character( ss[[ ii ]][1] ) 
+lag.names<-paste( '_L', 1:4, sep='')
+colNames = outer( nm, lag.names, paste, sep='' );
+colNames =  sub( pattern='  ', x=colNames, replacement=' ' )    
+xs = db[ , nm ]
+em = embed( as.matrix( xs ), 4 )
+colnames( em ) = as.vector( colNames )
+dd = as.data.frame( tail( em, 3 ) )  # the most recent relevant rows   1 true forecast and 2 validations
+predictions.ahead = predict( bn.fit, node = "response", dd, method = "parents")
+forecast = predictions.ahead[ 1:length(predictions.ahead) ]
+return( forecast )
+
+}  # end of fun  
+
+corNet = function( xx, corThresh, font.size = 75  ) {
+nn = colnames( xx )
+cc = abs( cor( xx  )  )
+L = nrow( cc )
+diag( cc ) = 0
+cc = as.vector( cc )
+qq = quantile( cc , corThresh )
+cc = ifelse( cc > qq , 1, 0 ) 
+cc = matrix( cc, ncol=L , nrow=L )
+rownames( cc ) =  colnames( cc ) = nn
+cr = abs( cor( response, xx ) )
+cr = ifelse( cr <= ( corThresh * 0.92 ), 1, 0 )
+cc[ 1, ] = cc[ , 1 ] = cr
+g1 <- graphAM( adjMat = cc )
+x <- layoutGraph(  g1 )
+nodeRenderInfo( x ) = list(  fontsize = font.size , fillcol='blue' ) 
+renderGraph(x) 
+} # end of fun 
+
+GeneFreq = function( df = df.bn, xx, sampleSize = 8 ){
+mn = min( 1000, nrow(df) )
+pop = matrix( 0, nrow = mn , ncol=ncol(xx) )
+for( ii in 1:mn ){
+      ss = unlist( df[ ii, 1:sampleSize ] )
+      ss = ss[ ss>0 ]
+      pop[ ii, ss ] = ss;
+}
+
+z<-  ifelse( pop > 0, 1,  0 ) 
+chrom.rowCount = dim(z)[1]
+total.colCount=dim( z )[2]  # includes lags as separate vars
+geneCount = apply( z, 2, sum )
+# take the top forty frequencies and corresponding names
+gc.srt = sort( geneCount, index.return=TRUE, decreasing=T );
+mm = min( 20, length(gc.srt$x) );
+geneCount =  gc.srt$x[ 1:mm ];
+
+ColNames = colnames(xx)[  gc.srt$ix[1:mm] ];      
+plot( x=1:length(geneCount), y=geneCount, type='h', ann=F, lwd=1.5  )
+title( main =  'Gene Frequencies Bar Chart', 
+        xlab='Genes by Column Number', ylab='Gene Frequency'  )
+points( x=1:length(geneCount), y=geneCount, pch=16, cex=0.75, col='purple2' );
+qq=quantile( geneCount, 0.1 )
+text( x=1:length(geneCount)-0.4,  y=rep( qq, length(geneCount) ), labels=ColNames , srt=90,  cex = 1.25, col='red', adj=c(0, 0.5)   )  
+mtext(text=as.character(geneCount), side = 3, line = 0, outer = FALSE, 
+           at = 1:mm , cex = 0.65 )            # pos=1,  
+
+return( gc.srt );
+
+}  # end of fun
+
+Mutate = function( df.bn = df.bn[ , 1:sampleSize ], mutationPct =  0.20, columnSpace = xx, response )  {
+popSize = nrow( df.bn )
+chromosomeLength = ncol( df.bn )
+# mutate a pair of genes of a randomly selected chromosome
+# one on goes off (->0), one off goes on (0->integer in nullSpace)
+# select at random mutationPct of population
+mutationPopSize = ceiling( popSize * mutationPct  )
+chromosomes = matrix ( 0, ncol = chromosomeLength, nrow = mutationPopSize )
+for( k in 1:mutationPopSize ) {      # begin for mutation loop 
+       chromosomes[ k,  ] = unlist( df.bn[ sample( x=1:popSize, size=1, replace=F ) , ] );  	                    
+       nullSpace = setdiff( 1:ncol( xx ), chromosomes[ k, ] )
+       on.gene.loc =  sample( x = 1:chromosomeLength , size=1 )  # location in chromosomes
+       repl.gene =  sample( x = nullSpace, size=1 )  # column in xx not already in chromosomes	
+       chromosomes[ k, on.gene.loc ] = repl.gene 
+       chromosomes[ k , ] = sort( chromosomes[ k , ] )
+}      # end for mutation loop
+
+return( chromosomes  );
+
+}  # end of function 
+
+crossOver  = function ( df = df.bn[ , 1:sampleSize ], crossOverPct =  0.20  ) {
+popSize = nrow( df )
+chromosomeLength = ncol( df )
+
+childrenPopSize = 2 * ceiling( popSize * crossOverPct  )			 
+chromosomes  = matrix( 0, nrow = childrenPopSize, ncol = chromosomeLength ) 
+
+for (  child in  seq( 1, childrenPopSize-1 , by = 2 )  ) {
+	parents = sample( 1:nrow( df ), size=2, replace=F ) 
+   ss = sample( 1:nrow( df ), size=2, replace=F )
+	p1  =  df [ ss[1] , ];
+	p2  =  df [ ss[2] , ]; 
+	# swap one gene on each chromosome
+    p1.swap.loc = sample( 1:length(p1), 1 )
+    p2.swap.loc = sample( 1:length(p2), 1 )
+    store.val = p2[ p2.swap.loc ]
+    p2[ p2.swap.loc ] = p1[ p1.swap.loc ]
+    p1[ p1.swap.loc ] =  store.val
+	chromosomes[ child,  ] = unlist( p1 )
+    ch = child+1  
+    chromosomes[ ch,  ] = unlist( p2  )
+} #	end breeding period for this generation 
+
+chromosomes = chromosomes[ rowSums ( x = chromosomes ) > 0, ] 
+
+return( chromosomes  );
+
+}  # end of function 
+
+```
+  
+```{r libs, echo=FALSE, cache=FALSE, results=FALSE, warning=FALSE, comment=FALSE, include=FALSE, message=FALSE }
+knitr::opts_chunk$set(echo = F)
+options(warn=-1) 
+library( bnlearn ); library( Rgraphviz  ); library(knitr);library(forecast);library(nnet);
+library( stringr ); library(Hmisc); library( parallel ); library(kableExtra);library(fractaldim);
+library(ggplot2)
+options(warn=0 )  
+```
+```{r, include=F, warning = F, echo=F }
+cpiDb = read.table( file='cpiDb.csv', header=T, sep='\t' , as.is = T, row.names=1  )
+rn = rownames( cpiDb )
+response = cpiDb[ ,'CPI']#  C:/users/lloyd/Desktop/BeadGame/
+response.name =  'CPI' 
+response =  response[ -(1:4)]   # delete earliest 4 rows to synch up with the lags up to 4 periods.
+xx = embed( as.matrix( cpiDb ), 5 )   # this includes the autoregressive components (lags of the response)
+#### delete the first ncol( cpiDb ) because those columns are at lag 0 as well and are concurrent with the response.
+#### hence, they cannot be predictors.
+xx = xx[ , -( 1:ncol( cpiDb ) )  ]
+rownames( xx ) = rn[ -(1:4)] 
+# keep dates in synch with the response
+nn = names( cpiDb )
+lag.names<-paste(  '_L' , 1:4, sep='')      				
+colNames = outer( nn, lag.names, paste, sep='' );    
+colnames( xx ) = as.vector( colNames )
+
+xx.test = tail( xx, 2 )
+response.test = tail( response, 2 )
+# remove these 2 rows from both  and put them back on the successive genetic runs
+L = nrow( xx )
+xx = xx[ 1:( L-2 ), ]
+response = response[ 1:(L-2) ]
+```
+Abstract:
+This article concerns genetic dynamic bayesian networks. The genetic algorithm randomly samples integers which correspond to column numbers in the dynamic data.frame. These random samples are all of size 8. Each column corresponds to a time-series that hopefully has some bearing on the future behavior of the response variable, CPI. Each bayesian network so generated will be evaluated according to its predictive accuracy on the test data, the bayesian score for the network as a whole and local arc strength for the parents of the response. The genetic algorithm will mutate and cross-fertilize the best 1000 networks consisting of 8 predictive nodes and a response one gene at a time. The posterior density is multivariate normal with linear means. This article includes the data and software. I have completely illustrated all concepts. In this brief example, we will be trying to model and forecast the economy of the United States. These forecasts are for demonstration purposes only. Past behavior is no sure or certain predictor of future behavior.
+
+Keywords: Forecasting, econometrics, financial forecasting, dynamic modeling, bayesian networks, time-series analysis,
+models of US economy, genetic algorithms, associative rules.
+
+*This software and data are free and comes with ABSOLUTELY NO WARRANTY. You are welcome to modify or redistribute it under the terms of the GNU General Public License (License GPL (>= 2)). For more information about these matters, see http://www.gnu.org/copyleft/gpl.html.*
+
+cpiDb is a data.frame that I created from 244 econometric time series from “fred” ( US Federal Reserve Database where all time-series dates run from 1991-01-01 to the present )  
+here is a portion of that data.frame. I imputed all missing values with bayesian methods.  
+
+```{r, results='show', include=T, echo=FALSE }
+y = knitr::kable(x = cpiDb[ 1:12,1:5,drop=F ], caption = "example from cpiDb")
+y = column_spec( y, column=2:5, width = '1.15in', bold = T, width_min = '0.9in', width_max = '4.75in' )
+y = column_spec( y, column=1, width = '0.9in', bold = T, width_min = '0.9in', width_max = '2.75in' )
+landscape(  kable_styling( y, c("bordered", "condensed"), full_width = F, font_size = 12 )) 
+```
+  
+You can have 5 databases with plain English column headers such as Payroll.Employment, instead of arcane symbols and long  codes found on Fred. For example, here is the seriesID of real GDP:  A191RL1Q225SBEA, where the BEA suffix means: the Bureau of Economic Analysis. )_ 
+  
+Synonymous terms by row:  
+cpiDb is a collection of time-series from FRED(C), US Federal Reserve of St. Louis.  
+cpiDb is the raw data for this article.   
+The dynamic dataframe is the lagged version of the raw data. For example, interest rate inversion often has a latency period of at least one year. I will also refer to it as xx.   
+time-series, 1 named column in the dynamic dataframe where each column can be identified by either its name or its column number ( column numbering in R starts at one not zero )    
+  
+I now concentrate on forecasting a single dependant variable, CPI for one month in advance. I can use all of the data in cpiDb ( from the present back to 01-01-1991 ).
+In actuality, I must further concentrate on obtaining a small subset of this vast amount of data.
+The dataframe: cpiDb, has 342 rows ( each row corresponding to measures taken on a particular date ). I will sample 8 columns from the dataframe where each column corresponds to a time-series ( refer to figure 1. ). 
+with samples drawn from the dynamic predictive data frame of the all time-series in cpiDb lagged to a depth of 4.
+The lags are indicated by '_L(n)'; 
+for example, cpi_L4 means 
+Consumer Price Index lagged by 4 periods ( reported monthly ) % chg from a year ago, indexed during 1982-1984 at 100. 
+Here is a simple example of an artificial time-series x lagged 5 times, from lag 0 to lag 4:
+
+```{r}
+x = matrix( 1:10, ncol=1, nrow=10 )
+colnames(x) = 'X'
+rownames(x) = rownames( xx )[1:10]
+# note: a lag of 4 will cost you for rows ( 4 time periods )
+x;
+ex = embed(x,5)
+colnames( ex ) = paste('x_L',0:4, sep='')
+dim(ex)
+rownames( ex ) = rownames(xx)[5:10]  # notice the row index reduced by 4 rows.
+ex
+```
+  
+where time runs from the past at the top to the more recent at the bottom (labeled date: 1992-02-01)  
+
+the column labeled x_L0 is the response  
+
+*order of precedence for lags*  
+
+| month 4 | month 3 | month 2| month 1| month 0 (the future month)|
+|---------|----------|----------|----------|----------|
+|cpi_L4| cpi_L3|  cpi_L2| cpi_L1| response ( cpi_L0 )  |
+
+
+Here is a portion of xx, the predictive dynamic dataframe derived from cpiDb  
+Note: the genetic algorithm randomly sampled these time-series from xx in subsets of size 8.     
+```{r, results='show', include=T, echo=FALSE }
+xxx = data.frame( dates=rownames(xx), xx[ , sample( 1:ncol(xx), 5 )  ] )
+y=knitr::kable(x = xxx[ 1:9, 1:6 ,drop=F ], row.names = F, align= 'r', digits = 2  )
+y = column_spec( y, column=2:6, width = '3.5in', bold = T, width_min = '1.75in',  border_left = T, border_right = T )
+y = column_spec( y, column=1 , width = '1.5in', bold = T, width_min = '1.5in', width_max = '2.75in' )
+kable_styling(y, c("bordered", "condensed"), full_width = F, font_size = 12 ) 
+
+#kable_styling( y, bootstrap_options = "basic", latex_options = "basic", full_width = T, position #= "center", font_size = 15 )
+```
+  
+I wanted to forecast the US Economy based on time series to the US Federal reserve and I wanted to discover something about the flows of information cascading through time perhaps suggesting possible futures the economy could take with each divergent path having a probability.
+  
+I will motivate the application of dynamic bayesian networks in econometrics with an example:
+```{r singleplot, fig.width=14, fig.height=10  }
+L = length( response)
+x=1:L 
+rn = rownames(xx)
+nn = colnames(xx)
+xsq = seq( 1, L, L/15 ); 
+xn= row.names(xx)[ xsq ]     
+x.lo = loess( response~x, degree=1, span=0.65 )
+plot( x, y=response  , type= 'l', axes=F, col='red',  lwd=1.3, main=paste('time-series plot of: ', response.name ),  xlab  = '', ylab  =  paste( response.name, "in m/m Pct chg", sep=' ' ), xlim=range(x)    ) 
+lines( x, fitted(x.lo), col='blue', lwd = 1.4, lty = 1 )
+#     points( x, fit,  col= 'blue', pch='.', cex=1.6 )  
+axis( side = 1, labels=xn, at=xsq, cex=0.35, las=3, xlim=range(x),  cex.axis=0.75, cex.lab=0.85   )   
+lines( x, fitted(x.lo),col='blue',lwd=1.1)
+box() 
+
+# second plot xy
+ss = sample( 1:ncol(xx), 1 )
+x = xx[ ,ss ]  # ss chosen with care
+oo = order( x )
+plot( x=x[oo], y=response[oo], col='red', t='l', xlab='', ylab='' )
+title( main='This is how your computer sees it when performing a local linear regression',
+       ylab = 'CPI', xlab = nn[ss] )
+mtext( side=3,  text = paste( ' CPI vs ', nn[ss], ',  a time series chosen at random' ) , col='green4', line= -2);
+# fractal dimension of time-series
+ws = L/20
+step.size = ws/5
+fd <- fd.estimate( response[oo], methods = "hallwood", window.size =ws , step.size = step.size, plot.loglog = F, nlags = 10 )
+# sufd = summary( fd )
+fracDim = mean( fd.get( fractaldim=fd, method='hallwood' )$fd )
+mtext( side=4,  text = paste( ' The average Fractal Dimension is: ', format( fracDim, trim=T, digits=3 ), sep='' ), col='purple2', line= -1    ); 
+x.lo = loess(response~x, degree=1, span=0.65 )
+lines( x=x[oo], fitted(x.lo)[oo],col='blue',lwd=1.1 )  #replace with compareentirechart ...
+
+```  
+  
+  
+This typical example demonstrates the futility of applying only linear regression to this data and this forecasting application. The local robust regression algorithm, loess, created the fit (in blue) of the response (cpi)( in red ) as a function of time (date).
+A single multivariate regression is unlikely to capture the more subtle dynamic structures present in the data. * There may be potential for bayesian loess models: Bayesian Treed Gaussian Process Models; Author Robert B. Gramacy. *
+
+In order to prepare for the genetic algorithm, I removed the last 2 rows of xx and the last 2 elements of the response and stored those as xx.test and response.test respectively.
+
+## Terminology:
+gene means any named time-series in xx which can become a node in the network
+chromosome means 8 genes that define the predictive nodes in the dynamic bayesian network
+population means a set of chromosomes, in this case about 15 K after 4 successive filters.
+I sorted the  base population of chromosomes by the average of fwd.error1 and fwd.error2.
+This is a valid operation because xx.test and response.test have been removed from the data
+prior to the run.
+I took the top 2000 fittest chromosomes, corresponding to networks of 8 predictive nodes each.
+
+After re-binding xx.test to xx and response.test to response, I then applied mutation and a crossOver operators to this population. CorConn and parBN.Filter measured the fitness of each chromosome in each successive population where only the elite survive (quantile 90%). This result is merged with the base population and sorted by totalRock (measure of connectivity). The included showStrength function shows us the 15 fittest dynamic bayesian networks arrived at so far. In at least 15 trials so far, 100,000 chromosomes appears to be adequate.
+
+After repeatedly sampling 8 time-series from the predictive dynamic data.frame, xx and successive surviving populations,
+we arrive at a data frame where each row corresponds to a random sample ( 8 column numbers from xx ) along with 4 measures of its fitness.
+
+#### in this data.frame.bayesian.network, or df.bn, we have many primitive measures of interest: 
+| acrynym      | concise description
+|---------------| ---------------------
+|"ss"  | randomly selected column number from xx
+|"totalRock"  | measure of network connectivity
+|"response.cor" | correlation between the response and all other predictor nodes.
+|"fwd.error1" | out.of.sample 1 - predicted from the 8 predictor nodes from prior periods in time 
+|"fwd.error2" | out.of.sample 2 - predicted from the 8 predictor nodes from prior periods in time 
+| 'forecast' | the forecast ( see DAG directed acyclic graph )
+
+```{r randomSamples, include=T, results='show', echo=F }
+sampleSize = 8
+runLength = 50000
+df.bn = read.table('df.bn.cpi.csv', header = TRUE, sep = ",", row.names = 1 )
+if( ncol(df.bn)> 16 ) df.bn = df.bn[ , -1 ]    
+df.bn = df.bn[ which( rowSums( df.bn ) != 0), ]   
+fe = df.bn[ , 'fwd.error2'  ]        
+oo = order(  fe, decreasing = F )       
+df.bn = df.bn[ oo,  ]
+rownames(df.bn) = NULL
+round( as.data.frame( df.bn[ 1:8 ,1:16] ), 8 ) 
+```
+
+here is the best performing random sample of size 8 from the predictive time-series matrix, xx. 
+with the response time-seriesID: CPI  ( consumer price index chg % Y/Y )
+We select for networks with a high degree of connectivity (as measured by the linear correlation ). In fact, we select for this feature from the outset.
+
+In this article we select networks with both potential for forecasting accuracy and network connectivity ( linear correlation and bayes.network.score and total arcStrength for the response and its parents ). Below is an example selected by the genetic algorithm. Notice the large number of lines radiating from the response and the high inter-connectivity globally.
+
+```{r  corPlot , singleplot, fig.width=12, fig.height=10 }
+if( ncol( df.bn )== 14 ) df.bn = df.bn[ , -1 ]
+undf = unlist( df.bn[ 1, 1:sampleSize ] )
+if( sum(undf) == 0 ) browser()
+nn = colnames( xx[ ,undf  ] )
+xxx = cbind( response = response , xx[ , undf ]  )
+xxx = apply( xxx, 2, as.numeric )
+colnames( xxx ) = c(  'response', nn )
+par( ps = 12, cex = 2, cex.main = 1 )
+corNet ( xx = xxx, corThresh = 0.52, font.size=62 )
+```
+  
+### here is the fittest random sample ( of size 8 ) drawn from xx, the predictive, dynamic data.frame as selected by genetic algorithm.
+```{r}
+ss = unlist( df.bn[ 1, 1:sampleSize ] )
+xxx = data.frame( dates=rownames(xx), xx[ , ss ] )
+y=knitr::kable(x = xxx[ 2:6, 2:6 ,drop=F ], row.names = 1  )
+y = column_spec( y, column=2:6, width = '3.75in', bold = F, width_min = '2.75in', width_max = '4.75in' )
+y = column_spec( y, column=1, width = '2.5in', bold = T, width_min = '2.5in', width_max = '2.75in' )
+kable_styling( y, c("bordered", "condensed"), full_width = F) 
+#kable_styling( y, bootstrap_options = "basic", latex_options = "basic", full_width = T, position #= "right", font_size = 15 )
+```
+
+```{r, results='show', include=FALSE, echo=FALSE }
+nn = colnames( xx )
+nn.1 = nn[ undf ]
+nn.1 = matrix(nn.1, ncol=1)
+colnames(nn.1)='time series name'
+nn.1
+```
+  
+here are the most frequently occurring leading indicators in the top 1000 models for forecasting CPI ( the response )  
+  
+```{r, results='show', fig.show=T, fig.width=14, fig.height=12 }
+nn = colnames( xx )
+gFreqs = GeneFreq( df = df.bn, xx=xx, sampleSize = 8 )
+```
+  
+  
+here are the most frequently occurring genes 
+(equivalent terms in review: net.nodes ~ colnames(xx)~ genes in a chromosome )
+```{r, results='asis' }
+mt = matrix( nn[ gFreqs[[2]][1:19]   ], ncol=1  )
+colnames(mt)='frequently occurring time series name'
+knitr::kable(x = mt, caption = "Most Frequent Genes (nodes) in the fittest bayesian networks")
+```
+ 
+Here is some of the corresponding black list derived from this random sample 
+The black list prevents reverse causation.
+
+```{r, results='asis'}
+blk.lst = blackList( nn = as.vector(nn.1) )
+knitr::kable(x = blk.lst[1:16, ], caption = "black listed arcs to prevent reverse causation")
+```
+### here is a panel of dynamic bayesian networks focused on the forecast for: 
+** Consumer Price Index %chg Y/Y **  
+  
+```{r strengthPlot, echo=FALSE, results='show', fig.keep='all', fig.width=12, fig.height=10, fig.show=T, include=T }
+
+showStrength  ( xx=xx, response=response, response.name=response.name, df = df.bn[ 1:3, 1:sampleSize ],  sampleSize=sampleSize, db = cpiDb, titleSuffix = ' chg % in CPI (consumer price index) y/y', font.size = 63 )  
+
+``` 
+  
+### Notes:'
+the best selection criteria should be Both total arc strength for the response and 
+lowest fwd errors on test data hidden from the genetic algorithm. In phase one, I established a base population of 100,000 chromosomes (from random samples from the column space of xx of size 8 genes ). This run determined the fwd.errors. In phase two, the mutation and crossOver operators played over the base population selecting for total arcStrength, a local metric concerning the parents of the response, in terms of dependency in probability of these local variables.
+The genetic algorith was elitist, selecting the top 5000 to pass on to the next generation.
+A better alternative would be a preditor-prey evolutionary strategy which could find a sub-optimal balance between different measures of fitness, this article contains 2 such measure: total net correlation ( rotalRock ) and minimal foreward errors on missing test data and total Arc strength for the response and its immed. parents.
+### depends upon:
+Package: bnlearn  Cre,Aut Marco Scutari   a brilliant package
+Package: RvizGraph
+
+
+
