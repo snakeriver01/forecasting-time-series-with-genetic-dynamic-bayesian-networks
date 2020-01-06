@@ -5,7 +5,7 @@ author: "LloydL"
 date: '`r format(Sys.Date(), "%Y %m %d")`'
 output:
   html_document:
-    code_folding: show
+    code_folding: hide
 fontsize: 12pt
 fig_width: 18
 fig_height: 14
@@ -24,7 +24,7 @@ options(width=1800)
 }
 </style>
 
-```{r definition, echo = F, include=TRUE } 
+```{r definition, echo = T, include=TRUE } 
 # this is the key function extending bnlearn to perform dynamic bayesian networks similar to
 # the layering feature found in bnstruct
 
