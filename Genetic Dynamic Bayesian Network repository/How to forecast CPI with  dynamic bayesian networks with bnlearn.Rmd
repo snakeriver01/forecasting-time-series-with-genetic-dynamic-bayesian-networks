@@ -1,19 +1,21 @@
 ---
-title: How to forecast econometric and financial time-series with genetic Dynamic Bayesian Networks and Associative Rules
-subtitle: in this article, we will be forecasting **CPI** ( Consumer Price Index )  
+title: Forecasting econometric and financial time-series with Dynamic Bayesian Networks
+  and Evolutionary Strategies
 author: "LloydL"
-date: '`r format(Sys.Date(), "%Y %m %d")`'
-output:
-  html_document:
-    code_folding: hide
+output: pdf_document
 fontsize: 12pt
 fig_width: 18
+subtitle: in this article, we will be forecasting **CPI** ( Consumer Price Index )
 fig_height: 14
 ---
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(fig.height = 9, fig.width = 7)
 options(width=1800)
+# html_document:
+#    code_folding: hide
+# date: "`r format(Sys.Date(), "%Y %m %d")`" 
 ```
 
 <style type="text/css">
@@ -24,7 +26,7 @@ options(width=1800)
 }
 </style>
 
-```{r definition, echo = T, include=TRUE } 
+```{r definition, echo = F, include=TRUE } 
 # this is the key function extending bnlearn to perform dynamic bayesian networks similar to
 # the layering feature found in bnstruct
 
@@ -309,10 +311,17 @@ library( stringr ); library(Hmisc); library( parallel ); library(kableExtra);lib
 library(ggplot2)
 options(warn=0 )  
 ```
-```{r, include=F, warning = F, echo=F }
-cpiDb = read.table( file='cpiDb.csv', header=T, sep='\t' , as.is = T, row.names=1  )
+```{r, include=F, warning = F, echo=F } 
+cpiDb = read.table(file='cpiDb.csv', header = TRUE,  sep =   '\t'  ,  row.names=1,    as.is = T,
+           nrows = -1,
+           skip = 0, check.names = TRUE, # fill = !blank.lines.skip,
+           strip.white = TRUE,    blank.lines.skip = TRUE,
+           comment.char = "#",
+           allowEscapes = FALSE, flush = FALSE,
+           stringsAsFactors = F,
+           fileEncoding = "", encoding = "unknown",  skipNul = FALSE)
 rn = rownames( cpiDb )
-response = cpiDb[ ,'CPI']#  C:/users/lloyd/Desktop/BeadGame/
+response = cpiDb[ ,'CPI'] 
 response.name =  'CPI' 
 response =  response[ -(1:4)]   # delete earliest 4 rows to synch up with the lags up to 4 periods.
 xx = embed( as.matrix( cpiDb ), 5 )   # this includes the autoregressive components (lags of the response)
@@ -336,7 +345,7 @@ response = response[ 1:(L-2) ]
 Abstract:
 This article concerns genetic dynamic bayesian networks. The genetic algorithm randomly samples integers which correspond to column numbers in the dynamic data.frame. These random samples are all of size 8. Each column corresponds to a time-series that hopefully has some bearing on the future behavior of the response variable, CPI. Each bayesian network so generated will be evaluated according to its predictive accuracy on the test data, the bayesian score for the network as a whole and local arc strength for the parents of the response. The genetic algorithm will mutate and cross-fertilize the best 1000 networks consisting of 8 predictive nodes and a response one gene at a time. The posterior density is multivariate normal with linear means. This article includes the data and software. I have completely illustrated all concepts. In this brief example, we will be trying to model and forecast the economy of the United States. These forecasts are for demonstration purposes only. Past behavior is no sure or certain predictor of future behavior.
 
-Keywords: Forecasting, econometrics, financial forecasting, dynamic modeling, bayesian networks, time-series analysis,
+Keywords: Forecasting, econometrics, financial forecasting, dynamic modeling, bayesian networks, time-series analysis, machine learning, pattern recognition, 
 models of US economy, genetic algorithms, associative rules.
 
 *This software and data are free and comes with ABSOLUTELY NO WARRANTY. You are welcome to modify or redistribute it under the terms of the GNU General Public License (License GPL (>= 2)). For more information about these matters, see http://www.gnu.org/copyleft/gpl.html.*
@@ -502,7 +511,7 @@ colnames( xxx ) = c(  'response', nn )
 par( ps = 12, cex = 2, cex.main = 1 )
 corNet ( xx = xxx, corThresh = 0.52, font.size=62 )
 ```
-  
+
 ### here is the fittest random sample ( of size 8 ) drawn from xx, the predictive, dynamic data.frame as selected by genetic algorithm.
 ```{r}
 ss = unlist( df.bn[ 1, 1:sampleSize ] )
